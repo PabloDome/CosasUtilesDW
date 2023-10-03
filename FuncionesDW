@@ -1,0 +1,243 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from scipy.optimize import curve_fit
+from scipy.stats import norm
+from scipy.stats import cauchy
+from scipy import stats
+from scipy import integrate
+from numba import jit
+
+Escala = 0.467 # Escala de las imagenes (micron/pixel)
+
+#@jit
+def ContornoPolares(coordenadas_contorno, P):
+    coordenadas_contorno[:,0] = coordenadas_contorno[:,0] - P[0]
+    coordenadas_contorno[:,1] = coordenadas_contorno[:,1] - P[1]
+
+    Vector = coordenadas_contorno*1.0
+    Polar = np.zeros(Vector.shape)
+
+    for i in range(len(Vector[:,0])):
+        if Vector[i,0]>0 and Vector[i,1]>=0:
+            Polar[i,0] = np.arctan(Vector[i,1]/Vector[i,0])
+        elif Vector[i,0]==0 and Vector[i,1]>=0:
+            Polar[i,0] = np.pi/2
+        elif Vector[i,0]<0:
+            Polar[i,0] = np.pi +  np.arctan(Vector[i,1]/Vector[i,0])
+        elif Vector[i,0]==0 and Vector[i,1]<0:
+            Polar[i,0] = 3*np.pi/2
+        elif Vector[i,0]>0 and Vector[i,1]<0:
+            Polar[i,0] = 2*np.pi + np.arctan(Vector[i,1]/Vector[i,0])
+        
+        Polar[i,1] = Escala*np.sqrt(pow(Vector[i,0],2) + pow(Vector[i,1],2))
+
+    columna_a_ordenar = Polar[:, 0]  # Primera columna
+    indices_ordenados = np.argsort(columna_a_ordenar)
+    matriz_ordenada = Polar[indices_ordenados]
+    
+    return matriz_ordenada
+
+#@jit(nopython=True)
+def PendOrd(y2,y1,x2,x1):
+    PO = np.zeros(2)
+    PO[0] = (y2-y1)/(x2-x1)
+    PO[1] = (y1*x2-y2*x1)/(x2-x1)
+
+    return PO
+
+
+def PolarDiscreto(Polar, PuntosDiscreto):
+
+    Polar_discreto = np.zeros((PuntosDiscreto,2))
+
+    Tam = len(Polar[:,0])
+
+    for i in range(PuntosDiscreto):
+        Polar_discreto[i,0] = (i+1)*np.pi*2/PuntosDiscreto
+
+        j = 0
+        while j < Tam:
+
+            if (Polar_discreto[i,0] - Polar[j,0]) < 0:
+                Pend = PendOrd(Polar[j,1],Polar[j-1,1],Polar[j,0],Polar[j-1,0])
+                Polar_discreto[i,1] = Pend[0]*Polar_discreto[i,0] + Pend[1]
+                j = Tam
+            
+            elif (Polar_discreto[i,0] - Polar[j,0]) == 0:
+                Polar_discreto[i,1] = Polar[j,1]
+                j = Tam
+
+            j = j + 1
+        
+        if Polar_discreto[i,0]<Polar[0,0]:
+            Polar_discreto[i,1] = Polar[0,1]
+
+        if (Polar_discreto[i,0] > Polar[Tam-1,0]):
+            Polar_discreto[i,1] = Polar[Tam-1,1]
+    
+    return Polar_discreto
+
+def ProcesoImagen(ImagenDominio,ImagenFondo, Vecinos, VecinosRetoque, umbral_valor, Perimetro_min, Perimetro_max, NumContorno, Recortar_cuadrado, P1, P2):
+    # Proceso 1 - Binarización de la imagen
+
+    ImagenResta = -ImagenDominio+ImagenFondo
+    ImagenPromedio = cv2.GaussianBlur(ImagenResta, (Vecinos*2+1,Vecinos*2+1), 0) #Promedio Gaussiano, (Imagen, Tamaño Kernel (número impares y positivos), DesviaciónEstandar en dir x)
+    _, Imagen_Binaria = cv2.threshold(ImagenPromedio, umbral_valor, 255, cv2.THRESH_BINARY)
+
+    if Recortar_cuadrado==1 :
+        Imagen_Binaria = RecortarImagen(Imagen_Binaria, 0, 0, 0, P1, P2)
+
+    # Proceso 2 - Limpieza de partículas
+
+    Imagen_contornos = 0*Imagen_Binaria
+    contornos, _ = cv2.findContours(Imagen_Binaria[:,:,0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(Imagen_contornos, contornos, -1, (255, 255, 255), 2)
+    perimetros = [cv2.arcLength(contorno, True) for contorno in contornos]
+    ContornosLimpiosPer = []
+    for i in range(len(perimetros)):
+        if perimetros[i]>Perimetro_min and perimetros[i]<Perimetro_max:
+            ContornosLimpiosPer.append(contornos[i])
+
+    Imagen_contornos_limpios = 0*Imagen_contornos
+    cv2.drawContours(Imagen_contornos_limpios, ContornosLimpiosPer, -1, (255, 255, 255), thickness=cv2.FILLED)
+
+    # Proceso 3 - Retoque bordes y contornos
+    ImagenPromedio2 = cv2.GaussianBlur(Imagen_contornos_limpios, (VecinosRetoque*2+1,VecinosRetoque*2+1), 0) #Promedio Gaussiano, (Imagen, Tamaño Kernel (número impares y positivos), DesviaciónEstandar en dir x)
+    _, Imagen_Binaria2 = cv2.threshold(ImagenPromedio2, (255/2), 255, cv2.THRESH_BINARY)
+
+    
+    Imagen_contornos = Imagen_contornos*0
+    contornos, _ = cv2.findContours(Imagen_Binaria2[:,:,0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    ContornosLimpios2 = []
+    ContornosLimpios2.append(contornos[NumContorno])
+    cv2.drawContours(Imagen_contornos, ContornosLimpios2, -1, (255, 255, 255), 5)
+    coordenadas_contorno = contornos[NumContorno].reshape(-1, 2) # Con esto paso los contornos a un vector
+
+    Imagen_contornos_Elegidos = np.zeros_like(Imagen_Binaria)
+    cv2.drawContours(Imagen_contornos_Elegidos, ContornosLimpios2, -1, (255, 255, 255), thickness=cv2.FILLED)
+
+
+    return Imagen_Binaria2, Imagen_contornos, coordenadas_contorno, Imagen_contornos_Elegidos
+
+def CentroMasa(Perfil):
+    Tam = len(Perfil[:,0])
+
+    CM = np.zeros(2)
+
+    for i in range (Tam):
+        CM[0] = CM[0]+Perfil[i,0]
+        CM[1] = CM[1]+Perfil[i,1]
+
+    return CM/Tam
+
+def FunRugosidad(Perfil):
+    Tam_Perf = len(Perfil[:,1])
+
+    Br = np.zeros((Tam_Perf, 2))
+
+    for k in range(Tam_Perf):
+        Br[k,0] = 2*np.pi*(k+1)/(Tam_Perf+1)
+
+        sum = 0
+        for j in range(Tam_Perf-k):
+            sum = pow(Perfil[j+k,1]-Perfil[j,1],2) + sum
+        
+        Br[k,1] = sum/(Tam_Perf-k)
+    
+    return Br
+
+def CalculoU2PerimetroArea(Perfil, Imagen_Elegidos):
+    R_med = np.mean(Perfil[:,1])
+    
+    u2 = np.std((Perfil[:,1]-R_med)*(Perfil[:,1]-R_med))
+
+    contornos, _ = cv2.findContours(Imagen_Elegidos[:,:,0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    Area = Escala*Escala*cv2.contourArea(contornos[0])
+    Per = Escala*cv2.arcLength(contornos[0], True)
+
+    return R_med, u2, Per, Area
+
+def FactorDeEstructura(Perfil):
+    Tam_Perf = len(Perfil[:,1])
+
+    Largo = integrate.simpson(Perfil[:,1], Perfil[:,0])
+    R_med = np.mean(Perfil[:,1])
+    u = np.zeros(Tam_Perf)
+    u[:] = Perfil[:,1] - R_med
+    
+    Sq = np.zeros((Tam_Perf, 2))
+
+    for k in range(Tam_Perf):
+        q = 2*np.pi*(k+1)/Tam_Perf
+        Sq[k,0] = q*Tam_Perf/(Largo)
+
+        sum_re = 0
+        sum_im = 0
+
+        for j in range(Tam_Perf):
+            sum_re = u[j]*np.cos(-(j+1)*q) + sum_re
+            sum_im = -u[j]*np.sin(-(j+1)*q) + sum_im
+        
+        Sq[k,1] = ((sum_re ** 2)+(sum_im**2))/(Tam_Perf**2)
+    
+    Sq[Tam_Perf-1,1] = Sq[Tam_Perf-2,1]
+    
+    return Sq
+
+def Autocorrelacion(Perfil):
+    R_med = np.mean(Perfil[:,1])
+    autocorr = np.correlate(Perfil[:,1] - R_med, Perfil[:,1] - R_med, mode='full') / np.sum((Perfil[:,1] - R_med) ** 2)
+    Escala = np.pi*4/autocorr.size
+
+    vector = [x for x in range(0, autocorr.size)]
+    Theta = list(map(lambda x: x*Escala-np.pi*2, vector))
+
+    Acorr = np.zeros((len(Theta),2))
+    
+    Acorr[:,0] = Theta
+    Acorr[:,1] = autocorr
+    
+    return Acorr
+
+def FunLambda(Area, Perimetro, Alpha, Beta, Tau, H):
+    Lambda = np.zeros((len(Area),2))
+
+    V_H = np.exp(-Alpha*pow(H,-0.25)+Beta)
+    dV_H = 0.25*pow(H,-5/4)*np.exp(-Alpha*pow(H,-0.25)+Beta)
+
+    Lambda[:,0] = Area[:,0]
+    Lambda[:,1] = -10*(Area[:,1]*(1e-12)+Perimetro[:,1]*(1e-6)*V_H*(Tau/4))/(2*np.pi*dV_H*Tau)
+    Lambda[:,1] = Lambda[:,1] - Lambda[0,1]
+
+    return Lambda
+
+@jit
+def RecortarImagen(Imagen, Factor_B, Factor_G, Factor_R, P1, P2):
+
+    Tam_imagen = Imagen.shape
+
+    for x in range(Tam_imagen[0]):
+        for y in range(Tam_imagen[1]):
+            if x<P1[0]:
+                Imagen[x,y,0] = Factor_B
+                Imagen[x,y,1] = Factor_G
+                Imagen[x,y,2] = Factor_R
+            if y<P1[1]:
+                Imagen[x,y,0] = Factor_B
+                Imagen[x,y,1] = Factor_G
+                Imagen[x,y,2] = Factor_R
+            if x>P2[0]:
+                Imagen[x,y,0] = Factor_B
+                Imagen[x,y,1] = Factor_G
+                Imagen[x,y,2] = Factor_R
+            if y>P2[1]:
+                Imagen[x,y,0] = Factor_B
+                Imagen[x,y,1] = Factor_G
+                Imagen[x,y,2] = Factor_R
+
+    return Imagen
