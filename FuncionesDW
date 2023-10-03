@@ -241,3 +241,8 @@ def RecortarImagen(Imagen, Factor_B, Factor_G, Factor_R, P1, P2):
                 Imagen[x,y,2] = Factor_R
 
     return Imagen
+
+def PrinteoConAreas(A, Color_point, Point_Style):
+    plt.plot(A[:,0], A[:,1], Point_Style, color = Color_point)
+    plt.fill_between(A[:,0], A[:,1]-A[:,2],A[:,1], alpha=0.3, color = Color_point)
+    plt.fill_between(A[:,0], A[:,1]+A[:,2],A[:,1], alpha=0.3, color = Color_point)
